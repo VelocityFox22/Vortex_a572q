@@ -1,10 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # ============================================
-#  Kernel Build Script - Samsung Galaxy A72
-#  By: VelocityFox22
-#  Optimized Clang/GCC Usage
+#   Kernel Build Script - Samsung Galaxy A572Q
+#   By: VelocityFox22
 # ============================================
 
 # =========[ Warna untuk log ]=========
@@ -20,89 +19,187 @@ log_warn()    { echo -e "${YELLOW}[WARN]${RESET} $1"; }
 log_error()   { echo -e "${RED}[ERR]${RESET} $1"; }
 
 # =========[ Konfigurasi Awal ]=========
+ROOT_DIR="$(pwd)"
 CONFIG="vendor/a72q_defconfig"
 CHAT_ID="[ Your ID Telegram ]"
-BOT_TOKEN="[ Your ID Bot ]:[ Your Bot Token ]"
-IMAGE_PATH="out/arch/arm64/boot/Image.gz"
+BOT_TOKEN="[ Your bot id : Your bot token]"
 BUILD_HOST="Fox22"
 BUILD_USER="Velocity"
 
-# =========[ Path Toolchain ]=========
-CLANG_PATH="$(pwd)/toolchain/clang-r547379/bin"
-GCC_PATH="$(pwd)/toolchain/gcc/bin"
+# Output image candidates
+IMAGE_CANDIDATES=(
+  "out/arch/arm64/boot/Image.gz"
+  "out/arch/arm64/boot/Image"
+)
 
-# Clang/GCC Triple
-CLANG_TRIPLE="aarch64-linux-gnu-"
-CROSS_COMPILE="aarch64-linux-gnu-"
-CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+# =========[ Toolchain / Clang setup ]=========
+DEFAULT_TOOLCHAIN_REL="toolchain/clang-r547379"
+ALT_TOOLCHAIN_REL="toolchain/clang-r547379"
 
-# Tambahkan ke PATH
-export PATH="$CLANG_PATH:$GCC_PATH:$PATH"
+try_paths=(
+  "${ROOT_DIR}/${DEFAULT_TOOLCHAIN_REL}"
+  "${ROOT_DIR}/${ALT_TOOLCHAIN_REL}"
+)
 
-# =========[ Env Kernel Make ]=========
-KERNEL_ENV="DTC_EXT=$(pwd)/tools/dtc \
-            CONFIG_BUILD_ARM64_DT_OVERLAY=y \
-            PYTHON=python2"
+TOOLCHAIN_DIR=""
+for p in "${try_paths[@]}"; do
+  if [[ -d "$p" ]]; then
+    TOOLCHAIN_DIR="$p"
+    break
+  fi
+done
 
-# =========[ Step 1: Persiapan Out Dir ]=========
-log_info "Mempersiapkan direktori out..."
-mkdir -p out
+if [[ -z "$TOOLCHAIN_DIR" ]]; then
+  log_error "Toolchain clang-r547379 tidak ditemukan di salah satu lokasi:"
+  for p in "${try_paths[@]}"; do echo "  - $p"; done
+  log_info "Pastikan sudah mengekstrak clang-r547379 ke salah satu path di atas."
+  log_info "Download clang-r547379 AOSP: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/"
+  exit 2
+fi
 
-# =========[ Step 2: Atur Build Info ]=========
+log_info "Menggunakan toolchain clang di: $TOOLCHAIN_DIR"
+
+# Binaries yang digunakan dari toolchain
+CLANG_BIN="${TOOLCHAIN_DIR}/bin/clang"
+CLANG_PP_BIN="${TOOLCHAIN_DIR}/bin/clang++"
+LLVM_AR="${TOOLCHAIN_DIR}/bin/llvm-ar"
+LLVM_NM="${TOOLCHAIN_DIR}/bin/llvm-nm"
+LLVM_STRIP="${TOOLCHAIN_DIR}/bin/llvm-strip"
+LLVM_OBJCOPY="${TOOLCHAIN_DIR}/bin/llvm-objcopy"
+LLVM_OBJDUMP="${TOOLCHAIN_DIR}/bin/llvm-objdump"
+LD_LLD="${TOOLCHAIN_DIR}/bin/ld.lld"
+
+# Validasi keberadaan binary penting
+required_bins=("$CLANG_BIN" "$CLANG_PP_BIN" "$LLVM_AR" "$LLVM_NM" "$LLVM_STRIP" "$LLVM_OBJCOPY" "$LLVM_OBJDUMP" "$LD_LLD")
+for b in "${required_bins[@]}"; do
+  if [[ ! -x "$b" ]]; then
+    log_error "Binary toolchain tidak ditemukan atau tidak executable: $b"
+    exit 3
+  fi
+done
+
+# =======[ Environment variables ]========
+export ARCH=arm64
 export KBUILD_BUILD_HOST="$BUILD_HOST"
 export KBUILD_BUILD_USER="$BUILD_USER"
 
-# =========[ Step 3: Load Defconfig ]=========
+# Tambahkan bin toolchain ke PATH 
+export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
+
+# Setup LD_LIBRARY_PATH
+if [[ -d "${TOOLCHAIN_DIR}/lib64" ]]; then
+  export LD_LIBRARY_PATH="${TOOLCHAIN_DIR}/lib64:${LD_LIBRARY_PATH:-}"
+fi
+
+# Cross / clang triple
+export CLANG_TRIPLE="aarch64-linux-gnu-"
+
+# Untuk 64-bit & 32-bit toolchain
+export CROSS_COMPILE="aarch64-linux-gnu-"
+export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+
+CC="$CLANG_BIN"
+CXX="$CLANG_PP_BIN"
+AR="$LLVM_AR"
+NM="$LLVM_NM"
+STRIP="$LLVM_STRIP"
+OBJCOPY="$LLVM_OBJCOPY"
+OBJDUMP="$LLVM_OBJDUMP"
+LD="$LD_LLD"
+
+log_info "Environment clang siap: CC=$CC, AR=$AR, LD=$LD"
+log_info "CROSS_COMPILE=$CROSS_COMPILE"
+log_info "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
+
+# =========[ Pengecekan dependency helper ]=========
+missing_tools=()
+for t in curl tar make gzip bzip2; do
+  if ! command -v "$t" &>/dev/null; then
+    missing_tools+=("$t")
+  fi
+done
+if [[ ${#missing_tools[@]} -ne 0 ]]; then
+  log_warn "Tools tidak ditemukan: ${missing_tools[*]}. Pastikan sudah terinstal (curl, tar, make, dll)."
+fi
+
+# =========[ Persiapan direktori out ]=========
+log_info "Mempersiapkan direktori out..."
+mkdir -p out
+
+# =========[ Step 1: Load defconfig ]=========
 log_info "Menggunakan defconfig: $CONFIG"
-make -j"$(nproc)" \
-    -C "$(pwd)" \
-    O="$(pwd)/out" \
-    $KERNEL_ENV \
-    ARCH=arm64 \
-    CC=clang \
-    HOSTCC=clang \
-    HOSTCXX=clang++ \
-    CLANG_TRIPLE="$CLANG_TRIPLE" \
-    CROSS_COMPILE="$CROSS_COMPILE" \
-    CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-    "$CONFIG"
+(
+  set -x
+  make -C "${ROOT_DIR}" O="${ROOT_DIR}/out" ARCH=arm64 "$CONFIG"
+)
 
-# =========[ Step 4: Compile Kernel ]=========
-log_info "Memulai compile kernel dengan Clang 20 & GCC 5.x..."
-make -j"$(nproc)" \
-    -C "$(pwd)" \
-    O="$(pwd)/out" \
-    $KERNEL_ENV \
-    ARCH=arm64 \
-    CC=clang \
-    HOSTCC=clang \
-    HOSTCXX=clang++ \
-    AR=llvm-ar \
-    NM=llvm-nm \
-    OBJCOPY=llvm-objcopy \
-    OBJDUMP=llvm-objdump \
-    STRIP=llvm-strip \
-    READELF=llvm-readelf \
-    CLANG_TRIPLE="$CLANG_TRIPLE" \
-    CROSS_COMPILE="$CROSS_COMPILE" \
-    CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32"
+# =========[ Step 2: Compile Kernel ]=========
+log_info "Memulai compile kernel..."
+JOBS="$(nproc --all || echo 4)"
+export CC CXX AR NM STRIP OBJCOPY OBJDUMP LD CLANG_TRIPLE
 
-# =========[ Step 5: Salin Hasil Image ]=========
-if [[ -f "out/arch/arm64/boot/Image" ]]; then
-    cp "out/arch/arm64/boot/Image" "$(pwd)/arch/arm64/boot/Image"
-    log_success "Kernel Image berhasil disalin ke arch/arm64/boot/"
-else
-    log_warn "File Image tidak ditemukan, mungkin build menghasilkan Image.gz saja."
+(
+  set -x
+  make -C "${ROOT_DIR}" -j"${JOBS}" O="${ROOT_DIR}/out" ARCH=arm64 \
+    CC="${CC}" \
+    CROSS_COMPILE="${CROSS_COMPILE}" \
+    CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" \
+    CLANG_TRIPLE="${CLANG_TRIPLE}" \
+    LD="${LD}" \
+    AR="${AR}" \
+    NM="${NM}" \
+    STRIP="${STRIP}" \
+    OBJCOPY="${OBJCOPY}" \
+    OBJDUMP="${OBJDUMP}"
+)
+
+log_success "Proses compile kernel selesai."
+
+# =========[ Step 3: Salin Hasil Image ]=========
+COPIED_IMAGE=""
+for candidate in "${IMAGE_CANDIDATES[@]}"; do
+  if [[ -f "${ROOT_DIR}/${candidate}" ]]; then
+    target_dir="${ROOT_DIR}/arch/arm64/boot"
+    mkdir -p "$target_dir"
+    cp "${ROOT_DIR}/${candidate}" "${target_dir}/"
+    COPIED_IMAGE="${target_dir}/$(basename "$candidate")"
+    log_success "Kernel image berhasil disalin ke ${target_dir}/"
+    break
+  fi
+done
+
+if [[ -z "$COPIED_IMAGE" ]]; then
+  log_warn "Tidak menemukan Image atau Image.gz di out/arch/arm64/boot/. Mungkin build gagal atau nama file berbeda."
 fi
 
-# =========[ Step 6: Upload ke Telegram ]=========
-if [[ -f "$IMAGE_PATH" ]]; then
-    log_info "Mengirim $IMAGE_PATH ke Telegram..."
-    curl -s -F chat_id="$CHAT_ID" \
-         -F document=@"$IMAGE_PATH" \
-         "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" \
-    && log_success "Sukses terkirim ke Telegram!"
-else
-    log_error "Build selesai, tapi $IMAGE_PATH tidak ditemukan!"
-    exit 1
+# =========[ Step 4: Upload ke Telegram ]=========
+FILE_TO_SEND=""
+for candidate in "${IMAGE_CANDIDATES[@]}"; do
+  if [[ -f "${ROOT_DIR}/${candidate}" ]]; then
+    FILE_TO_SEND="${ROOT_DIR}/${candidate}"
+    break
+  fi
+done
+
+if [[ -z "$FILE_TO_SEND" ]]; then
+  log_error "Build selesai, namun tidak ada file Image/Image.gz ditemukan untuk di-upload."
+  log_info "Periksa direktori: ${ROOT_DIR}/out/arch/arm64/boot/"
+  exit 4
 fi
+
+# Validate Telegram placeholders
+if [[ "$CHAT_ID" == "[Your Id Telegram]" || "$BOT_TOKEN" == "[Id Bot Telegram]:[Your Bot Token]" ]]; then
+  log_warn "CHAT_ID atau BOT_TOKEN belum diatur. Melewatkan upload Telegram."
+  exit 0
+fi
+
+# Upload via Telegram bot API
+log_info "Mengirim ${FILE_TO_SEND} ke Telegram..."
+curl -s -F chat_id="$CHAT_ID" \
+     -F document=@"${FILE_TO_SEND}" \
+     "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+  && log_success "Sukses terkirim ke Telegram!" \
+  || { log_error "Gagal mengirim ke Telegram (cek CHAT_ID/BOT_TOKEN/Internet)."; exit 5; }
+
+# =========[ Selesai ]=========
+log_success "Build script selesai tanpa error."
