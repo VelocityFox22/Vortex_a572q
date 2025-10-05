@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================
-#   Kernel Build Script - Samsung Galaxy A572Q
+#   Kernel Build Script - Samsung Galaxy A72
 #   By: VelocityFox22
 # ============================================
 
@@ -20,9 +20,9 @@ log_error()   { echo -e "${RED}[ERR]${RESET} $1"; }
 
 # =========[ Konfigurasi Awal ]=========
 ROOT_DIR="$(pwd)"
-CONFIG="vendor/a72q_defconfig"
-CHAT_ID="[ Your ID Telegram ]"
-BOT_TOKEN="[ Your bot id : Your bot token]"
+CONFIG="vendor/a52q_defconfig"
+CHAT_ID="6071370488"
+BOT_TOKEN="7692038361:AAFCr22TYGDUh_zPCzZOZZYXToJbwDQUf3c"
 BUILD_HOST="Fox22"
 BUILD_USER="Velocity"
 
